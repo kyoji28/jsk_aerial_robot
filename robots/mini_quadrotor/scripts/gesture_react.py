@@ -7,14 +7,15 @@ from geometry_msgs.msg import Point
 from std_msgs.msg import String
 from jsk_recognition_msgs.msg import HumanSkeletonArray
 from jsk_recognition_msgs.msg import HumanSkeleton
+from std_msgs.msg import Empty
 
-class Move_to_human():
+class gesture_react():
     def __init__(self):
         self.msgs_pub = rospy.Publisher('chatter', String, queue_size = 10)
         self.skeleton_sub = rospy.Subscriber('/edgetpu_human_pose_estimator/output/skeletons',HumanSkeletonArray, self.skeleton_cb)
-        self.takeoff_pub = rospy.Publisher('/tello/takeoff',Empty, queue_size = 10)
+        self.takeoff_pub = rospy.Publisher('/quadrotor/teleop_command/takeoff',Empty, queue_size = 10)
         self.skeletons = HumanSkeletonArray()
-        self.handsup_flag == False:
+        self.handsup_flag = False
         self.bone_names = []
         self.bones = []
         self.start = Point()
@@ -23,7 +24,7 @@ class Move_to_human():
 
     def skeleton_cb(self,msg):
         self.skeletons = msg
-        # if the borns are not found, coral TPU generates not nothing but an "empty" skeleton
+        # if the borns are not found, coral TPU generates nothing but an "empty" skeleton
         if self.skeletons.skeletons != []:
             for skeleton in self.skeletons.skeletons:
                 self.bone_names = skeleton.bone_names
@@ -76,13 +77,13 @@ class Move_to_human():
                 rospy.loginfo(f"Found wrist bone: {find_wrist_bone_name}, Coordinates: {wrist_bone_coordinates.y}")
                 rospy.loginfo(f"Found shoulder bone: {find_shoulder_bone_name}, Coordinates: {shoulder_bone_coordinates.y}")
                 # Is this condition true ? plz check it!
-                                if wrist_bone_coordinates.y <  shoulder_bone_coordinates.y:
+                if wrist_bone_coordinates.y <  shoulder_bone_coordinates.y:
                     self.handsup_flag = True
                     self.msgs_pub.publish("Hands up")
                     print("Hands up")
             else:
                 rospy.logwarn("Required bones not found.")
-                #     if wrist_bone_coordinates.y >shoulder_bone_coordinates.y:                                                                                                                            
+                #if wrist_bone_coordinates.y >shoulder_bone_coordinates.y:                                                                                                                            
                 # self.msgs_pub.publish("success!!")                                                                                                                                                       
                 # print("success")                                                                                                                                                                         
 
@@ -101,12 +102,13 @@ class Move_to_human():
     def timerCallback(self,event):
         try:
             self.search_bone()
+            self.takeoff()
         except Exception as e:
             pass
            # rospy.logerr(f"Error in timerCallback: {e}")
 
 
 if __name__ == '__main__':
-    rospy.init_node("Move_to_human")
-    node = Move_to_human()
+    rospy.init_node("gesture_react")
+    node = gesture_react()
     rospy.spin()
