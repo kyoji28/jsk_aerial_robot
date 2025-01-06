@@ -83,13 +83,13 @@ class gesture_react():
                     print("Hands up")
             else:
                 rospy.logwarn("Required bones not found.")
-                #if wrist_bone_coordinates.y >shoulder_bone_coordinates.y:                                                                                                                            
-                # self.msgs_pub.publish("success!!")                                                                                                                                                       
-                # print("success")                                                                                                                                                                         
+                #if wrist_bone_coordinates.y >shoulder_bone_coordinates.y:
+                # self.msgs_pub.publish("success!!")
+                # print("success")
 
     def cmd_vel(self):
         pass
-        # Task 4 if wrist_bone_coordinates.y > shoulder_bone_coordinates.y is true, publish cmd_vel to tello                                                                                               
+        # Task 4 if wrist_bone_coordinates.y > shoulder_bone_coordinates.y is true, publish cmd_vel to tello
 
 
     def takeoff(self):
