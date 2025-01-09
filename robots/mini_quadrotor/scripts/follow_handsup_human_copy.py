@@ -18,10 +18,10 @@ class Move_to_human():
     def __init__(self):
         rospy.loginfo('activate')
 
-        self.camera_height = 720 #Going to modify later because this size is for tello
-        self.camera_width =  960 #Going to modify later because this size is for tello as well
+        self.camera_height = 480
+        self.camera_width =  640
         self.fly_flag = False
-        self.rect_sub = rospy.Subscriber('/human/output/rects', RectArray, self.rect_cb)
+        self.rect_sub = rospy.Subscriber('/edgetpu_face_detector/output/rects', RectArray, self.rect_cb)
         self.rects = RectArray()
         self.max_index = 0
         self.max_rect_area = 0.0

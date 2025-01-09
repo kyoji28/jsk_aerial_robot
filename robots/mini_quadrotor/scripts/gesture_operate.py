@@ -48,7 +48,7 @@ class gesture_operate():
         shoulder_bone_coordinates = []
         right_wrist_coordinates = []
         left_wrist_coordinates =[]
-        
+
         if len(self.bone_names) == 0 or len(self.bones) == 0:
              rospy.loginfo("no bones")
              return
