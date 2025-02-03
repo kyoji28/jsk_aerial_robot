@@ -16,6 +16,8 @@ class voice_operate():
         self.start_pub = rospy.Publisher('/quadrotor/teleop_command/start', Empty, queue_size = 10)
         self.takeoff_pub = rospy.Publisher('/quadrotor/teleop_command/takeoff',Empty, queue_size = 10)
         self.land_pub = rospy.Publisher('/quadrotor/teleop_command/land',Empty,queue_size = 10)
+        self.approach_pub = rospy.Publisher('/quadrotor/teleop_command/approach', Empty, queue_size = 10)
+        self.away_pub = rospy.Publisher('/quadrotor/teleop_command/away',Empty, queue_size = 10)
         self.voice_text_sub = rospy.Subscriber('/speech_to_text', SpeechRecognitionCandidates, self.voice_cb)
         
         
@@ -41,6 +43,13 @@ class voice_operate():
             # self.fly_flag = False
             self.land_pub.publish(Empty())
 
+        if "come" in self.command and "on" in self.command:
+            print("Come on!!,{}".format(self.confidence))
+            self.approach_pub.publish(Empty())
+
+        if "away" in self.command:
+            print("Getting Away,{}".format(self.confidence))
+            self.away_pub.publish(Empty())
         
         
 if __name__ == '__main__':
