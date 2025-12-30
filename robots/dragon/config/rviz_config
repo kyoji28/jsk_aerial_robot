@@ -65,10 +65,6 @@ Visualization Manager:
       Frame Timeout: 15
       Frames:
         All Enabled: true
-        body:
-          Value: true
-        camera_init:
-          Value: true
         dragon/cog:
           Value: true
         dragon/edf1_left:
@@ -111,8 +107,6 @@ Visualization Manager:
           Value: true
         dragon/inter_joint3:
           Value: true
-        dragon/lidar_imu:
-          Value: true
         dragon/link1:
           Value: true
         dragon/link2:
@@ -120,8 +114,6 @@ Visualization Manager:
         dragon/link3:
           Value: true
         dragon/link4:
-          Value: true
-        dragon/livox_mid360:
           Value: true
         dragon/root:
           Value: true
@@ -143,9 +135,6 @@ Visualization Manager:
       Show Names: true
       Tree:
         world:
-          camera_init:
-            body:
-              {}
           dragon/root:
             dragon/cog:
               {}
@@ -190,9 +179,6 @@ Visualization Manager:
                                 {}
                               dragon/thrust4:
                                 {}
-                      dragon/livox_mid360:
-                        dragon/lidar_imu:
-                          {}
       Update Interval: 0
       Value: true
     - Alpha: 1
@@ -296,10 +282,6 @@ Visualization Manager:
           Show Axes: false
           Show Trail: false
           Value: true
-        lidar_imu:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
         link1:
           Alpha: 1
           Show Axes: false
@@ -316,11 +298,6 @@ Visualization Manager:
           Show Trail: false
           Value: true
         link4:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-          Value: true
-        livox_mid360:
           Alpha: 1
           Show Axes: false
           Show Trail: false
@@ -398,6 +375,15 @@ Visualization Manager:
       size: 128
       text size: 14
       top: 128
+    - Class: rviz/InteractiveMarkers
+      Enable Transparency: true
+      Enabled: true
+      Name: InteractiveMarkers
+      Show Axes: false
+      Show Descriptions: true
+      Show Visual Aids: false
+      Update Topic: /target_pose/update
+      Value: true
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48
@@ -442,9 +428,9 @@ Visualization Manager:
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.3847961127758026
+      Pitch: 0.39479610323905945
       Target Frame: <Fixed Frame>
-      Yaw: 4.245002269744873
+      Yaw: 4.215001583099365
     Saved: ~
 Window Geometry:
   Displays:
@@ -464,5 +450,5 @@ Window Geometry:
   Views:
     collapsed: true
   Width: 1064
-  X: 856
-  Y: 27
+  X: 260
+  Y: 72
