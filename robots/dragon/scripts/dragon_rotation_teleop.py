@@ -45,18 +45,9 @@ class DragonRotationTeleop:
 
     def __init__(self):
         self.ns = rospy.get_param("~robot_ns", "/dragon").rstrip("/")
-        self.max_tilt_deg = float(rospy.get_param("~max_tilt_deg", 20.0))
-        self.max_change_tilt_deg = float(rospy.get_param("~max_change_tilt_deg", 20.0))
-        self.max_change_yaw_deg = float(rospy.get_param("~max_change_yaw_deg", 30.0))
-        self.min_height = float(rospy.get_param("~min_height", 0.5))
         self.max_data_age = float(rospy.get_param("~max_data_age", 2.0))
-
-        if not all(math.isfinite(v) and v > 0 for v in (
-                self.max_tilt_deg, self.max_change_tilt_deg,
-                self.max_change_yaw_deg, self.max_data_age)):
-            raise ValueError("angle limits/max_data_age must be finite and positive")
-        if not math.isfinite(self.min_height) or self.min_height < 0:
-            raise ValueError("min_height must be finite and nonnegative")
+        if not math.isfinite(self.max_data_age) or self.max_data_age <= 0:
+            raise ValueError("~max_data_age must be positive and finite")
 
         self.state = None
         self.state_received = None
@@ -129,25 +120,10 @@ class DragonRotationTeleop:
         if self.rpy_deg is None or not self.is_fresh(self.odom_received):
             print("No recent odometry. Check {}/uav/cog/odom.".format(self.ns))
             return
-        if self.z < self.min_height:
-            print("Refusing attitude command below {:.2f} m altitude.".format(self.min_height))
-            return
         if self.rot_pub.get_num_connections() == 0:
             print("No subscriber on {}/target_rotation_motion. Check the control node.".format(
                 self.ns))
             return
-        if abs(roll) > self.max_tilt_deg or abs(pitch) > self.max_tilt_deg:
-            print("Roll/Pitch targets are limited to +/-{:.1f} deg.".format(self.max_tilt_deg))
-            return
-
-        current_roll, current_pitch, current_yaw = self.rpy_deg
-        if (abs(roll - current_roll) > self.max_change_tilt_deg + 1e-8 or
-                abs(pitch - current_pitch) > self.max_change_tilt_deg + 1e-8 or
-                abs(wrap_deg(yaw - current_yaw)) > self.max_change_yaw_deg + 1e-8):
-            print("Change too large: max Roll/Pitch={:.1f} deg, Yaw={:.1f} deg per command.".format(
-                self.max_change_tilt_deg, self.max_change_yaw_deg))
-            return
-
         yaw = wrap_deg(yaw)
         quat = quaternion_from_euler(
             math.radians(roll), math.radians(pitch), math.radians(yaw)
@@ -193,13 +169,10 @@ class DragonRotationTeleop:
   quit (q)         Exit only (does NOT land)
 ============================================
 Rotation commands are accepted only while HOVERING.
-Roll/Pitch targets: +/-{:.1f} deg.
-Max change per command: Roll/Pitch {:.1f} deg, Yaw {:.1f} deg.
-Minimum altitude: {:.2f} m.
+No additional angle or altitude limits are imposed by this tool.
 Relative inputs add Euler angles, not body-fixed rotations.
 Wait for the robot to settle before the next command.
-""".format(self.max_tilt_deg, self.max_change_tilt_deg,
-           self.max_change_yaw_deg, self.min_height))
+""")
 
     def run(self):
         self.help()

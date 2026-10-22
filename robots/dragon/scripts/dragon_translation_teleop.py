@@ -35,14 +35,7 @@ class DragonTranslationTeleop:
 
     def __init__(self):
         self.ns = rospy.get_param("~robot_ns", "/dragon").rstrip("/")
-        self.max_move = float(rospy.get_param("~max_move", 0.5))
-        self.min_z = float(rospy.get_param("~min_z", 0.4))
         self.max_data_age = float(rospy.get_param("~max_data_age", 2.0))
-
-        if not math.isfinite(self.max_move) or self.max_move <= 0:
-            raise ValueError("~max_move must be positive and finite")
-        if not math.isfinite(self.min_z) or self.min_z < 0:
-            raise ValueError("~min_z must be nonnegative and finite")
         if not math.isfinite(self.max_data_age) or self.max_data_age <= 0:
             raise ValueError("~max_data_age must be positive and finite")
 
@@ -109,11 +102,6 @@ class DragonTranslationTeleop:
         if self.nav_pub.get_num_connections() == 0:
             print("No subscriber on {}/uav/nav. Check the control node.".format(self.ns))
             return
-        if xyz[2] < self.min_z:
-            print("Refusing target z={:.3f} m below min_z={:.3f} m.".format(
-                xyz[2], self.min_z))
-            return
-
         nav = FlightNav()
         nav.header.stamp = rospy.Time.now()
         nav.control_frame = FlightNav.WORLD_FRAME
@@ -136,10 +124,6 @@ class DragonTranslationTeleop:
         if not all(math.isfinite(v) for v in delta):
             print("Displacement must contain finite numbers.")
             return
-        if math.sqrt(sum(v * v for v in delta)) > self.max_move + 1e-9:
-            print("One relative move is limited to {:.2f} m. Change ~max_move if needed.".format(
-                self.max_move))
-            return
         if self.position is None or not self.is_fresh(self.odom_received):
             print("No recent odometry to compute a relative target.")
             return
@@ -160,10 +144,9 @@ class DragonTranslationTeleop:
   quit (q)         Exit only (does NOT land)
 =============================================
 Movement commands are accepted only while HOVERING.
-'relative move' is limited to {:.2f} m per command.
-Minimum target altitude: {:.2f} m.
+No additional distance or altitude limits are imposed by this tool.
 Wait for the robot to settle before the next command.
-""".format(self.max_move, self.min_z))
+""")
 
     def run(self):
         self.help()

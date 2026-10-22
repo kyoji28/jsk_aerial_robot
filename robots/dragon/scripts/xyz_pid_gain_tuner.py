@@ -18,11 +18,6 @@ from std_srvs.srv import Trigger, TriggerResponse
 class XYZPIDGainTuner:
     GAIN_NAMES = {"p": "p_gain", "i": "i_gain", "d": "d_gain"}
     GROUPS = ("xy", "z")
-    LIMITS = {
-        "p_gain": (0.0, 50.0),
-        "i_gain": (0.0, 20.0),
-        "d_gain": (0.0, 50.0),
-    }
     YAML_DEFAULTS = {
         "xy": {"p_gain": 3.6, "i_gain": 0.03, "d_gain": 4.0},
         "z": {"p_gain": 2.8, "i_gain": 1.2, "d_gain": 2.8},
@@ -83,15 +78,21 @@ class XYZPIDGainTuner:
         self.get_srv = rospy.Service("~get_gains", Trigger, self.get_callback)
         rospy.loginfo("DRAGON XYZ PID gain tuner is ready.")
 
-    @classmethod
-    def validate_gain(cls, name, value):
-        low, high = cls.LIMITS[name]
-        if not math.isfinite(value) or not low <= value <= high:
-            raise ValueError(
-                "{} must be within [{}, {}] (received {})".format(
-                    name, low, high, value
-                )
-            )
+    @staticmethod
+    def validate_gain(name, value):
+        # No tool-specific P/I/D upper/lower bounds. Original PID.cfg governs.
+        # Still reject NaN and infinity as invalid numeric inputs.
+        if not math.isfinite(float(value)):
+            raise ValueError("{} must be a finite number".format(name))
+
+    @staticmethod
+    def report_server_adjustment(group, requested, applied):
+        for name, value in requested.items():
+            actual = applied[name]
+            if not math.isclose(float(value), actual, rel_tol=1e-9, abs_tol=1e-9):
+                print("  NOTE: {} {} requested {}, server applied {} "
+                      "(see original PID.cfg limits).".format(
+                          group.upper(), name, value, actual))
 
     def apply_gains(self, group, gains):
         """Update P, I, and D separately: the C++ callback uses switch(level)."""
@@ -102,6 +103,7 @@ class XYZPIDGainTuner:
         client.update_configuration({"pid_control_flag": True})
         for name in ("p_gain", "i_gain", "d_gain"):
             client.update_configuration({name: float(gains[name])})
+        self.report_server_adjustment(group, gains, self.read_gains(group))
 
     def read_gains(self, group):
         config = self.clients[group].get_configuration(timeout=3)
@@ -130,6 +132,9 @@ class XYZPIDGainTuner:
             client = self.clients[group]
             client.update_configuration({"pid_control_flag": True})
             client.update_configuration({name: float(value)})
+            self.report_server_adjustment(
+                group, {name: value}, self.read_gains(group)
+            )
             return self.report_gains("SET {} {}".format(group.upper(), name))
 
     def set_all_gains(self, group, p, i, d):

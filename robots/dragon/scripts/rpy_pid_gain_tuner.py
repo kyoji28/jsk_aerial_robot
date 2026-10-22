@@ -23,13 +23,6 @@ AXES = ("roll_pitch", "yaw")
 GAINS = ("p_gain", "i_gain", "d_gain")
 GAIN_ALIASES = {"p": "p_gain", "i": "i_gain", "d": "d_gain"}
 
-# Bounds from aerial_robot_control/cfg/PID.cfg, not safe flight ranges.
-BOUNDS = {
-    "p_gain": (0.0, 50.0),
-    "i_gain": (0.0, 20.0),
-    "d_gain": (0.0, 50.0),
-}
-
 # Defaults from dragon/config/quad/v1_5_202601/control/FullVectoringControlConfig.yaml.
 BASELINE = {
     "roll_pitch": {"p_gain": 15.0, "i_gain": 0.3, "d_gain": 5.0},
@@ -73,16 +66,25 @@ class RpyPIDGainTuner:
 
     @staticmethod
     def _validate_one(key, value):
-        low, high = BOUNDS[key]
-        if not math.isfinite(value) or not low <= value <= high:
-            raise ValueError(
-                "{} must be finite and between {} and {}".format(key, low, high)
-            )
+        # Reject non-numeric/non-finite inputs only. No additional gain bounds:
+        # the original PID.cfg / dynamic_reconfigure server owns the limits.
+        if not math.isfinite(float(value)):
+            raise ValueError("{} must be a finite number".format(key))
 
     @classmethod
     def _validate_set(cls, values):
         for key in GAINS:
             cls._validate_one(key, float(values[key]))
+
+    @staticmethod
+    def _report_server_adjustment(axis, requested, applied):
+        """Show changes made by the original dynamic_reconfigure server."""
+        for key, value in requested.items():
+            actual = applied[key]
+            if not math.isclose(float(value), actual, rel_tol=1e-9, abs_tol=1e-9):
+                print("  NOTE: {} {} requested {}, server applied {} "
+                      "(see original PID.cfg limits).".format(
+                          axis, key, value, actual))
 
     def _read_axis(self, axis):
         config = self.clients[axis].get_configuration(timeout=3)
@@ -111,12 +113,13 @@ class RpyPIDGainTuner:
             return snapshot
 
     def _update_axis(self, axis, values):
-        """Validate first; send each gain separately for cfgPidCallback's levels."""
+        """Send gains separately; original PID.cfg enforces their permitted range."""
         self._validate_set(values)
         client = self.clients[axis]
         client.update_configuration({"pid_control_flag": True})
         for key in GAINS:
             client.update_configuration({key: float(values[key])})
+        self._report_server_adjustment(axis, values, self._read_axis(axis))
 
     def set_one(self, axis, key, value):
         self._validate_one(key, value)
@@ -124,6 +127,7 @@ class RpyPIDGainTuner:
             client = self.clients[axis]
             client.update_configuration({"pid_control_flag": True})
             client.update_configuration({key: value})
+            self._report_server_adjustment(axis, {key: value}, self._read_axis(axis))
             return self.show("SET {} {}".format(axis, key), selected=axis)
 
     def set_group(self, axis, p, i, d):
