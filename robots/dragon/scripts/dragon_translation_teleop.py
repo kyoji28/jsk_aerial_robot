@@ -1,16 +1,29 @@
 #!/usr/bin/env python3
-"""Interactive translation commands for DRAGON on ROS 1 (Gazebo first).
+"""Interactive XYZ translation commands for DRAGON (ROS 1).
 
-Works alongside pid_gain_tuner.py; does not modify the original controller.
-All translations use the WORLD frame and the robot CoG.
+Move the CoG in the WORLD frame using position + zero-velocity targets.
+Existing DRAGON controller and PID configuration are not modified.
+
+Commands:
+    move dx dy dz    Relative translation from current measured CoG position [m]
+    x    dx          Relative X translation from measured CoG position [m]
+    y    dy          Relative Y translation from measured CoG position [m]
+    z    dz          Relative Z translation from measured CoG position [m]
+    set  x  y  z     Absolute world-frame CoG target [m]
+    hold             Target current measured CoG position
+    status           Flight state, measured position, latest commanded target
+    help / quit
+
+This tool intentionally does not arm, take off, or land the robot.
 """
 
 import math
+import time
 
 import rospy
 from aerial_robot_msgs.msg import FlightNav
 from nav_msgs.msg import Odometry
-from std_msgs.msg import Empty, UInt8
+from std_msgs.msg import UInt8
 
 
 class DragonTranslationTeleop:
@@ -21,66 +34,80 @@ class DragonTranslationTeleop:
     }
 
     def __init__(self):
-        ns = rospy.get_param("~robot_ns", "/dragon").rstrip("/")
-        self.step = float(rospy.get_param("~step", 0.2))
+        self.ns = rospy.get_param("~robot_ns", "/dragon").rstrip("/")
         self.max_move = float(rospy.get_param("~max_move", 0.5))
         self.min_z = float(rospy.get_param("~min_z", 0.4))
+        self.max_data_age = float(rospy.get_param("~max_data_age", 2.0))
+
+        if not math.isfinite(self.max_move) or self.max_move <= 0:
+            raise ValueError("~max_move must be positive and finite")
+        if not math.isfinite(self.min_z) or self.min_z < 0:
+            raise ValueError("~min_z must be nonnegative and finite")
+        if not math.isfinite(self.max_data_age) or self.max_data_age <= 0:
+            raise ValueError("~max_data_age must be positive and finite")
+
         self.position = None
+        self.odom_received = None
         self.state = None
+        self.state_received = None
         self.last_target = None
 
-        self.nav_pub = rospy.Publisher(ns + "/uav/nav", FlightNav, queue_size=10)
-        self.arm_pub = rospy.Publisher(ns + "/teleop_command/start", Empty, queue_size=1)
-        self.takeoff_pub = rospy.Publisher(ns + "/teleop_command/takeoff", Empty, queue_size=1)
-        self.land_pub = rospy.Publisher(ns + "/teleop_command/land", Empty, queue_size=1)
-        rospy.Subscriber(ns + "/uav/cog/odom", Odometry, self.on_odom, queue_size=1)
-        rospy.Subscriber(ns + "/flight_state", UInt8, self.on_state, queue_size=1)
+        self.nav_pub = rospy.Publisher(
+            self.ns + "/uav/nav", FlightNav, queue_size=10
+        )
+        rospy.Subscriber(
+            self.ns + "/uav/cog/odom", Odometry, self.on_odom, queue_size=1
+        )
+        rospy.Subscriber(
+            self.ns + "/flight_state", UInt8, self.on_state, queue_size=1
+        )
 
     def on_odom(self, msg):
         p = msg.pose.pose.position
-        self.position = (p.x, p.y, p.z)
+        values = (p.x, p.y, p.z)
+        if not all(math.isfinite(v) for v in values):
+            rospy.logwarn_throttle(2.0, "Ignoring invalid CoG position")
+            return
+        self.position = values
+        self.odom_received = time.monotonic()
 
     def on_state(self, msg):
         self.state = msg.data
+        self.state_received = time.monotonic()
+
+    def is_fresh(self, received):
+        return (received is not None and
+                time.monotonic() - received <= self.max_data_age)
 
     def status(self):
         name = self.STATES.get(self.state, "UNKNOWN")
         print("Flight state: {} ({})".format(self.state, name))
+        if not self.is_fresh(self.state_received):
+            print("  Warning: flight state missing or stale")
         if self.position is None:
-            print("Position: not received yet")
+            print("CoG position: not received yet")
         else:
-            print("CoG position (world): x={:.3f}, y={:.3f}, z={:.3f} m".format(*self.position))
+            print("CoG position (world): x={:.3f}, y={:.3f}, z={:.3f} m".format(
+                *self.position))
+            if not self.is_fresh(self.odom_received):
+                print("  Warning: odometry missing or stale")
         if self.last_target is not None:
-            print("Last target (world): x={:.3f}, y={:.3f}, z={:.3f} m".format(*self.last_target))
-
-    def send_flight_command(self, kind):
-        pub, expected = {
-            "arm": (self.arm_pub, 0),
-            "takeoff": (self.takeoff_pub, 2),
-            "land": (self.land_pub, 5),
-        }[kind]
-        if self.state != expected:
-            print("Cannot {}: expected state {}, current {}. Run 'status'.".format(
-                kind, expected, self.state))
-            return
-        if pub.get_num_connections() == 0:
-            print("No subscriber for '{}'; check the DRAGON launch.".format(kind))
-            return
-        pub.publish(Empty())
-        print("Sent {} command. Use 'status' to check the transition.".format(kind))
+            print("Last target (world): x={:.3f}, y={:.3f}, z={:.3f} m".format(
+                *self.last_target))
 
     def send_position(self, xyz):
-        if self.state != self.HOVER:
-            print("Movement is allowed only in HOVER (flight_state=5).")
+        """Send an absolute CoG position target in the world frame."""
+        if not all(math.isfinite(v) for v in xyz):
+            print("Target position must contain finite numbers.")
             return
-        if self.position is None:
-            print("No odometry yet. Check /dragon/uav/cog/odom.")
+        if self.state != self.HOVER or not self.is_fresh(self.state_received):
+            print("Movement requires HOVER (flight_state=5) with a recent state message.")
+            return
+        if self.position is None or not self.is_fresh(self.odom_received):
+            print("No recent odometry. Check {}/uav/cog/odom.".format(self.ns))
             return
         if self.nav_pub.get_num_connections() == 0:
-            print("No subscriber on /uav/nav. Check the control node.")
-            return
-        if not all(math.isfinite(x) for x in xyz):
-            print("Position must contain finite numbers.")
+            print("No subscriber on {}/uav/nav. Check the control node.".format(self.ns))
             return
         if xyz[2] < self.min_z:
             print("Refusing target z={:.3f} m below min_z={:.3f} m.".format(
@@ -97,53 +124,52 @@ class DragonTranslationTeleop:
         nav.target_vel_x = 0.0
         nav.target_vel_y = 0.0
         nav.target_vel_z = 0.0
-        # yaw_nav_mode remains NO_NAVIGATION (preserve current yaw target).
+        # yaw_nav_mode is NO_NAVIGATION (existing yaw target unchanged).
         self.nav_pub.publish(nav)
         self.last_target = tuple(xyz)
-        print("Sent target: x={:.3f}, y={:.3f}, z={:.3f} m".format(*xyz))
+        print("Sent world CoG target: x={:.3f}, y={:.3f}, z={:.3f} m".format(*xyz))
+        print("  Wait for the robot to settle before the next command.")
 
     def move_relative(self, dx, dy, dz):
-        if self.position is None:
-            print("No odometry available yet.")
-            return
+        """Move relative to the current measured world-frame CoG position."""
         delta = (dx, dy, dz)
         if not all(math.isfinite(v) for v in delta):
             print("Displacement must contain finite numbers.")
             return
         if math.sqrt(sum(v * v for v in delta)) > self.max_move + 1e-9:
-            print("One command is limited to {:.2f} m. Change ~max_move if needed.".format(
+            print("One relative move is limited to {:.2f} m. Change ~max_move if needed.".format(
                 self.max_move))
             return
-        # Relative to current measured position, not previous target.
+        if self.position is None or not self.is_fresh(self.odom_received):
+            print("No recent odometry to compute a relative target.")
+            return
         target = tuple(p + d for p, d in zip(self.position, delta))
         self.send_position(target)
 
     def help(self):
         print("""
 ========= DRAGON Translation Teleop =========
-  arm (r)          Arm motors
-  takeoff (t)      Take off
-  land (l)         Land
-  status           Show flight state and CoG position
-
-  w / s            +X / -X by one step (world frame)
-  a / d            +Y / -Y by one step (world frame)
-  u / j            +Z / -Z by one step (world frame)
-  move dx dy dz    Relative translation in meters
-  step value       Change the step distance in meters
+  move dx dy dz    Relative move from measured CoG position [m]
+  x    dx          Relative X increment from measured CoG position [m]
+  y    dy          Relative Y increment from measured CoG position [m]
+  z    dz          Relative Z increment from measured CoG position [m]
+  set  x  y  z     Absolute world-frame CoG target [m]
   hold             Set target to current measured position
-
+  status           Show flight state, position and last target
   help             Show commands
-  quit (q)         Quit this tool (does NOT land)
-===========================================
-Wait until the robot has settled before sending the next move.
-""")
+  quit (q)         Exit only (does NOT land)
+=============================================
+Movement commands are accepted only while HOVERING.
+'relative move' is limited to {:.2f} m per command.
+Minimum target altitude: {:.2f} m.
+Wait for the robot to settle before the next command.
+""".format(self.max_move, self.min_z))
 
     def run(self):
         self.help()
         while not rospy.is_shutdown():
             try:
-                args = input("dragon> ").strip().lower().split()
+                args = input("xyz> ").strip().lower().split()
             except (KeyboardInterrupt, EOFError):
                 print()
                 break
@@ -151,43 +177,35 @@ Wait until the robot has settled before sending the next move.
                 continue
             cmd = args[0]
             try:
-                if cmd in ("arm", "r", "takeoff", "t", "land", "l"):
-                    if len(args) != 1:
-                        print("Usage: {}".format(cmd))
-                        continue
-                    command = {"r": "arm", "t": "takeoff", "l": "land"}.get(cmd, cmd)
-                    self.send_flight_command(command)
-                elif cmd == "status":
+                if cmd == "status" and len(args) == 1:
                     self.status()
-                elif cmd == "help":
+                elif cmd == "help" and len(args) == 1:
                     self.help()
-                elif cmd in ("q", "quit", "exit"):
+                elif cmd in ("q", "quit", "exit") and len(args) == 1:
                     if self.state == self.HOVER:
-                        print("Warning: robot is still in HOVER. Quitting does not land it.")
+                        print("Warning: robot may still be flying; quitting does not land it.")
                     break
-                elif cmd == "step" and len(args) == 2:
-                    value = float(args[1])
-                    if not (math.isfinite(value) and 0.0 < value <= self.max_move):
-                        print("Step must be > 0 and <= {:.2f} m.".format(self.max_move))
-                        continue
-                    self.step = value
-                    print("Step set to {:.3f} m".format(self.step))
                 elif cmd == "move" and len(args) == 4:
                     self.move_relative(*map(float, args[1:]))
+                elif cmd in ("x", "y", "z") and len(args) == 2:
+                    value = float(args[1])
+                    deltas = {
+                        "x": (value, 0.0, 0.0),
+                        "y": (0.0, value, 0.0),
+                        "z": (0.0, 0.0, value),
+                    }
+                    self.move_relative(*deltas[cmd])
+                elif cmd == "set" and len(args) == 4:
+                    self.send_position(tuple(map(float, args[1:])))
                 elif cmd == "hold" and len(args) == 1:
-                    if self.position is None:
-                        print("No odometry available yet.")
+                    if self.position is None or not self.is_fresh(self.odom_received):
+                        print("No recent odometry to hold the current position.")
                     else:
                         self.send_position(self.position)
-                elif cmd in ("w", "s", "a", "d", "u", "j") and len(args) == 1:
-                    unit = {"w": (1, 0, 0), "s": (-1, 0, 0),
-                            "a": (0, 1, 0), "d": (0, -1, 0),
-                            "u": (0, 0, 1), "j": (0, 0, -1)}[cmd]
-                    self.move_relative(*(v * self.step for v in unit))
                 else:
                     print("Unknown command or arguments. Type 'help'.")
             except ValueError:
-                print("Invalid number. Example: move 0.3 0 0")
+                print("Invalid number. Example: x 0.2, move 0.3 0 0, or set 0 0 1.0")
 
 
 if __name__ == "__main__":

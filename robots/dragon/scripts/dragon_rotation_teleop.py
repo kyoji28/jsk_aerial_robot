@@ -1,15 +1,25 @@
 #!/usr/bin/env python3
-"""Interactive DRAGON CoG-attitude teleoperation for ROS 1 (Gazebo first).
+"""Interactive RPY rotation commands for DRAGON (ROS 1).
 
-Publishes nav_msgs/Odometry to /dragon/target_rotation_motion with
-header.frame_id='cog'. DRAGON's DragonNavigator maps this message to
-setTargetRPY / setTargetOmega, so Roll, Pitch and Yaw are handled by the
-existing attitude PID controllers. No changes to C++ or PID YAML are needed.
+Set the CoG attitude in the WORLD reference using nav_msgs/Odometry on
+/dragon/target_rotation_motion (header.frame_id='cog'). The existing DRAGON
+attitude PID controller is used; its gains and C++ code are not modified.
 
-Angles entered in the console are in DEGREES, interpreted as Euler RPY
-in the WORLD reference. Relative commands add Euler-angle increments to
-CURRENT MEASURED CoG attitude (not to the previous target). They are NOT
-body-fixed-axis incremental rotations.
+Commands:
+    rotate dr dp dy  Relative RPY Euler-angle increments from measured CoG [deg]
+    set    r  p  y  Absolute world-referenced RPY target [deg]
+    roll   dr       Relative Roll increment [deg]
+    pitch  dp       Relative Pitch increment [deg]
+    yaw    dy       Relative Yaw increment [deg]
+    hold             Target the current measured CoG attitude
+    level            Target zero Roll/Pitch, keeping measured Yaw
+    status           Flight state, measured attitude, latest commanded target
+    help / quit
+
+Relative commands add world-referenced Euler-angle increments; they do NOT
+perform intrinsic (body-axis) incremental rotations.
+
+This tool intentionally does not arm, take off, or land the robot.
 """
 
 import math
@@ -17,7 +27,7 @@ import time
 
 import rospy
 from nav_msgs.msg import Odometry
-from std_msgs.msg import Empty, UInt8
+from std_msgs.msg import UInt8
 from tf.transformations import euler_from_quaternion, quaternion_from_euler
 
 
@@ -34,8 +44,7 @@ class DragonRotationTeleop:
     }
 
     def __init__(self):
-        ns = rospy.get_param("~robot_ns", "/dragon").rstrip("/")
-        self.step_deg = float(rospy.get_param("~step_deg", 5.0))
+        self.ns = rospy.get_param("~robot_ns", "/dragon").rstrip("/")
         self.max_tilt_deg = float(rospy.get_param("~max_tilt_deg", 20.0))
         self.max_change_tilt_deg = float(rospy.get_param("~max_change_tilt_deg", 20.0))
         self.max_change_yaw_deg = float(rospy.get_param("~max_change_yaw_deg", 30.0))
@@ -43,14 +52,11 @@ class DragonRotationTeleop:
         self.max_data_age = float(rospy.get_param("~max_data_age", 2.0))
 
         if not all(math.isfinite(v) and v > 0 for v in (
-                self.step_deg, self.max_tilt_deg,
-                self.max_change_tilt_deg, self.max_change_yaw_deg,
-                self.max_data_age)):
-            raise ValueError("step/angle limits/max_data_age must be finite and positive")
+                self.max_tilt_deg, self.max_change_tilt_deg,
+                self.max_change_yaw_deg, self.max_data_age)):
+            raise ValueError("angle limits/max_data_age must be finite and positive")
         if not math.isfinite(self.min_height) or self.min_height < 0:
             raise ValueError("min_height must be finite and nonnegative")
-        if self.step_deg > min(self.max_change_tilt_deg, self.max_change_yaw_deg):
-            raise ValueError("step_deg exceeds a per-command angle change limit")
 
         self.state = None
         self.state_received = None
@@ -60,14 +66,14 @@ class DragonRotationTeleop:
         self.last_target = None
 
         self.rot_pub = rospy.Publisher(
-            ns + "/target_rotation_motion", Odometry, queue_size=1
+            self.ns + "/target_rotation_motion", Odometry, queue_size=1
         )
-        self.arm_pub = rospy.Publisher(ns + "/teleop_command/start", Empty, queue_size=1)
-        self.takeoff_pub = rospy.Publisher(ns + "/teleop_command/takeoff", Empty, queue_size=1)
-        self.land_pub = rospy.Publisher(ns + "/teleop_command/land", Empty, queue_size=1)
-        rospy.Subscriber(ns + "/uav/cog/odom", Odometry, self.on_odom, queue_size=1)
-        rospy.Subscriber(ns + "/flight_state", UInt8, self.on_state, queue_size=1)
-        self.ns = ns
+        rospy.Subscriber(
+            self.ns + "/uav/cog/odom", Odometry, self.on_odom, queue_size=1
+        )
+        rospy.Subscriber(
+            self.ns + "/flight_state", UInt8, self.on_state, queue_size=1
+        )
 
     def on_state(self, msg):
         self.state = msg.data
@@ -76,8 +82,11 @@ class DragonRotationTeleop:
     def on_odom(self, msg):
         q = msg.pose.pose.orientation
         vals = (q.x, q.y, q.z, q.w)
+        if not all(math.isfinite(v) for v in vals):
+            rospy.logwarn_throttle(2.0, "Ignoring invalid CoG orientation quaternion")
+            return
         norm = math.sqrt(sum(v * v for v in vals))
-        if not all(math.isfinite(v) for v in vals) or norm < 1e-6:
+        if norm < 1e-6:
             rospy.logwarn_throttle(2.0, "Ignoring invalid CoG orientation quaternion")
             return
         angles_rad = euler_from_quaternion(tuple(v / norm for v in vals))
@@ -90,60 +99,43 @@ class DragonRotationTeleop:
         self.odom_received = time.monotonic()
 
     def is_fresh(self, received):
-        return received is not None and time.monotonic() - received <= self.max_data_age
+        return (received is not None and
+                time.monotonic() - received <= self.max_data_age)
 
     def status(self):
-        print("Flight state: {} ({})".format(
-            self.state, self.STATES.get(self.state, "UNKNOWN")))
+        name = self.STATES.get(self.state, "UNKNOWN")
+        print("Flight state: {} ({})".format(self.state, name))
         if not self.is_fresh(self.state_received):
             print("  Warning: flight state missing or stale")
         if self.rpy_deg is None:
             print("CoG attitude: not received yet")
         else:
-            print("CoG measured: Roll={:+.2f}, Pitch={:+.2f}, Yaw={:+.2f} deg; z={:.2f} m".format(
+            print("CoG attitude (world): roll={:+.2f}, pitch={:+.2f}, yaw={:+.2f} deg; z={:.2f} m".format(
                 *self.rpy_deg, self.z))
             if not self.is_fresh(self.odom_received):
-                print("  Warning: odometry stale")
+                print("  Warning: odometry missing or stale")
         if self.last_target is not None:
-            print("Last commanded: Roll={:+.2f}, Pitch={:+.2f}, Yaw={:+.2f} deg".format(
+            print("Last target (world): roll={:+.2f}, pitch={:+.2f}, yaw={:+.2f} deg".format(
                 *self.last_target))
 
-    def flight_command(self, kind):
-        pub, expected = {
-            "arm": (self.arm_pub, 0),
-            "takeoff": (self.takeoff_pub, 2),
-            "land": (self.land_pub, 5),
-        }[kind]
-        if not self.is_fresh(self.state_received):
-            print("Cannot {}: flight_state missing/stale".format(kind))
-            return
-        if self.state != expected:
-            print("Cannot {}: expected state {}, current {}. Run 'status'.".format(
-                kind, expected, self.state))
-            return
-        if pub.get_num_connections() == 0:
-            print("No subscriber for '{}'. Check bringup.launch.".format(kind))
-            return
-        pub.publish(Empty())
-        print("Sent {}. Run 'status' to confirm the transition.".format(kind))
-
     def send_target(self, roll, pitch, yaw):
-        if self.state != self.HOVER or not self.is_fresh(self.state_received):
-            print("Attitude commands require HOVER (flight_state=5).")
+        """Send an absolute world-referenced CoG RPY target (degrees)."""
+        if not all(math.isfinite(v) for v in (roll, pitch, yaw)):
+            print("Target attitude must contain finite numbers.")
             return
-        if not self.is_fresh(self.odom_received) or self.rpy_deg is None:
-            print("No recent CoG odometry. Check {}/uav/cog/odom.".format(self.ns))
+        if self.state != self.HOVER or not self.is_fresh(self.state_received):
+            print("Rotation requires HOVER (flight_state=5) with a recent state message.")
+            return
+        if self.rpy_deg is None or not self.is_fresh(self.odom_received):
+            print("No recent odometry. Check {}/uav/cog/odom.".format(self.ns))
             return
         if self.z < self.min_height:
             print("Refusing attitude command below {:.2f} m altitude.".format(self.min_height))
             return
         if self.rot_pub.get_num_connections() == 0:
-            print("No subscriber on {}/target_rotation_motion.".format(self.ns))
+            print("No subscriber on {}/target_rotation_motion. Check the control node.".format(
+                self.ns))
             return
-        if not all(math.isfinite(v) for v in (roll, pitch, yaw)):
-            print("Target angles must be finite numbers.")
-            return
-
         if abs(roll) > self.max_tilt_deg or abs(pitch) > self.max_tilt_deg:
             print("Roll/Pitch targets are limited to +/-{:.1f} deg.".format(self.max_tilt_deg))
             return
@@ -158,7 +150,8 @@ class DragonRotationTeleop:
 
         yaw = wrap_deg(yaw)
         quat = quaternion_from_euler(
-            math.radians(roll), math.radians(pitch), math.radians(yaw))
+            math.radians(roll), math.radians(pitch), math.radians(yaw)
+        )
         msg = Odometry()
         msg.header.stamp = rospy.Time.now()
         msg.header.frame_id = "cog"  # Exact value required by DragonNavigator
@@ -166,108 +159,94 @@ class DragonRotationTeleop:
         msg.pose.pose.orientation.y = quat[1]
         msg.pose.pose.orientation.z = quat[2]
         msg.pose.pose.orientation.w = quat[3]
-        # target angular velocities default to zero
+        # Target angular velocities default to zero.
         self.rot_pub.publish(msg)
         self.last_target = (roll, pitch, yaw)
-        print("Sent CoG RPY target: R={:+.1f}, P={:+.1f}, Y={:+.1f} deg".format(
+        print("Sent world CoG RPY target: roll={:+.2f}, pitch={:+.2f}, yaw={:+.2f} deg".format(
             roll, pitch, yaw))
         print("  Wait for the robot to settle before the next command.")
 
     def rotate_relative(self, dr, dp, dy):
-        if not all(math.isfinite(v) for v in (dr, dp, dy)):
-            print("Angles must be finite numbers.")
+        """Add Euler-angle increments to current measured world CoG RPY."""
+        delta = (dr, dp, dy)
+        if not all(math.isfinite(v) for v in delta):
+            print("Rotation increments must contain finite numbers.")
             return
         if self.rpy_deg is None or not self.is_fresh(self.odom_received):
-            print("No recent CoG attitude measurement.")
+            print("No recent odometry to compute a relative target.")
             return
-        r, p, y = self.rpy_deg
-        self.send_target(r + dr, p + dp, y + dy)
+        target = tuple(p + d for p, d in zip(self.rpy_deg, delta))
+        self.send_target(*target)
 
     def help(self):
         print("""
 ========== DRAGON Rotation Teleop ==========
-  arm / takeoff / land   Flight commands
-  status                 Measured CoG RPY & flight state
-
-  roll 5                 +5 deg Roll from current measured angle
-  pitch -5               -5 deg Pitch from current measured angle
-  yaw 15                 +15 deg Yaw from current measured angle
-  rotate 5 0 10          Relative RPY increments (deg)
-  set 0 0 0              Absolute world-referenced RPY target (deg)
-
-  r+ / r-                +/- one-step Roll
-  p+ / p-                +/- one-step Pitch
-  y+ / y-                +/- one-step Yaw
-  step 3                 Set step angle to 3 deg
-  level                  Set Roll/Pitch to 0, keep measured Yaw
-  hold                   Hold current measured RPY
-  help                   Display this help
-  quit                   Exit only (does not land)
+  rotate dr dp dy  Relative RPY rotation from measured CoG attitude [deg]
+  set    r  p  y   Absolute world-referenced CoG RPY target [deg]
+  roll   dr        Relative Roll increment [deg]
+  pitch  dp        Relative Pitch increment [deg]
+  yaw    dy        Relative Yaw increment [deg]
+  hold             Set target to current measured attitude
+  level            Set Roll/Pitch to 0, keep measured Yaw
+  status           Show flight state, attitude and last target
+  help             Show commands
+  quit (q)         Exit only (does NOT land)
 ============================================
-RPY commands are for CoG attitude in the world frame.
-Relative commands add Euler angles, not body-frame rotations.
-Wait until hovering and settled before testing new PID gains.
-""")
+Rotation commands are accepted only while HOVERING.
+Roll/Pitch targets: +/-{:.1f} deg.
+Max change per command: Roll/Pitch {:.1f} deg, Yaw {:.1f} deg.
+Minimum altitude: {:.2f} m.
+Relative inputs add Euler angles, not body-fixed rotations.
+Wait for the robot to settle before the next command.
+""".format(self.max_tilt_deg, self.max_change_tilt_deg,
+           self.max_change_yaw_deg, self.min_height))
 
     def run(self):
         self.help()
         while not rospy.is_shutdown():
             try:
                 args = input("rpy> ").strip().lower().split()
-            except (EOFError, KeyboardInterrupt):
+            except (KeyboardInterrupt, EOFError):
                 print()
                 break
             if not args:
                 continue
             cmd = args[0]
             try:
-                if cmd in ("arm", "takeoff", "land") and len(args) == 1:
-                    self.flight_command(cmd)
-                elif cmd == "status" and len(args) == 1:
+                if cmd == "status" and len(args) == 1:
                     self.status()
                 elif cmd == "help" and len(args) == 1:
                     self.help()
                 elif cmd in ("q", "quit", "exit") and len(args) == 1:
                     if self.state == self.HOVER:
-                        print("WARNING: drone may still be flying. Quit does not land.")
+                        print("Warning: robot may still be flying; quitting does not land it.")
                     break
-                elif cmd == "step" and len(args) == 2:
-                    val = float(args[1])
-                    if not (math.isfinite(val) and 0 < val <= min(
-                            self.max_change_tilt_deg, self.max_change_yaw_deg)):
-                        print("Step must be positive and within the angle change limits.")
-                    else:
-                        self.step_deg = val
-                        print("Step set to {:.1f} deg".format(val))
-                elif cmd in ("roll", "pitch", "yaw") and len(args) == 2:
-                    value = float(args[1])
-                    parts = {"roll": (value, 0.0, 0.0),
-                             "pitch": (0.0, value, 0.0),
-                             "yaw": (0.0, 0.0, value)}
-                    self.rotate_relative(*parts[cmd])
                 elif cmd == "rotate" and len(args) == 4:
                     self.rotate_relative(*map(float, args[1:]))
                 elif cmd == "set" and len(args) == 4:
                     self.send_target(*map(float, args[1:]))
-                elif cmd in ("r+", "r-", "p+", "p-", "y+", "y-") and len(args) == 1:
-                    axis, sign = cmd[0], (1 if cmd[1] == "+" else -1)
-                    delta = sign * self.step_deg
-                    self.rotate_relative(*{
-                        "r": (delta, 0.0, 0.0),
-                        "p": (0.0, delta, 0.0),
-                        "y": (0.0, 0.0, delta),
-                    }[axis])
-                elif cmd in ("level", "hold") and len(args) == 1:
+                elif cmd in ("roll", "pitch", "yaw") and len(args) == 2:
+                    value = float(args[1])
+                    parts = {
+                        "roll": (value, 0.0, 0.0),
+                        "pitch": (0.0, value, 0.0),
+                        "yaw": (0.0, 0.0, value),
+                    }
+                    self.rotate_relative(*parts[cmd])
+                elif cmd == "hold" and len(args) == 1:
                     if self.rpy_deg is None or not self.is_fresh(self.odom_received):
-                        print("No recent CoG attitude measurement.")
-                    elif cmd == "hold":
+                        print("No recent odometry to hold the current attitude.")
+                    else:
                         self.send_target(*self.rpy_deg)
+                elif cmd == "level" and len(args) == 1:
+                    if self.rpy_deg is None or not self.is_fresh(self.odom_received):
+                        print("No recent odometry to level the current attitude.")
                     else:
                         self.send_target(0.0, 0.0, self.rpy_deg[2])
                 else:
-                    print("Unknown command/arguments. Type 'help'.")
+                    print("Unknown command or arguments. Type 'help'.")
             except ValueError:
-                print("Invalid input. Example: rotate 5 0 10")
+                print("Invalid number. Example: rotate 5 0 10 or set 0 0 0")
 
 
 if __name__ == "__main__":
