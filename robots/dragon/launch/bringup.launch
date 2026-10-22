@@ -1,8 +1,8 @@
 <?xml version="1.0"?>
 <launch>
   ###########  launch config  ###########
-  <arg name="rm" default="True" />
-  <arg name="sim" default="False" />
+  <arg name="rm" default="False" />
+  <arg name="sim" default="True" />
   <arg name="real_machine" default="$(arg rm)" />
   <arg name="simulation" default="$(arg sim)" />
 
@@ -31,8 +31,8 @@
   <arg name="robot_ns" value="dragon$(arg robot_id)" />
   <arg name="config_dir" default="$(find dragon)/config/$(arg link_num)/$(arg model_name)" />
 
-  <arg name="demo" default="True" />
-  <arg name="headless" default="True" />
+  <arg name="demo" default="False" />
+  <arg name="headless" default="False" />
 
   ###########  UAV Config  ###########
   <group ns="$(arg robot_ns)">
